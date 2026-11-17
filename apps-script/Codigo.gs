@@ -17,7 +17,7 @@ const ZONA = 'America/Santiago';
 function doPost(e) {
   let body;
   try { body = JSON.parse(e.postData.contents); } catch (err) { return resp({ok: false, error: 'Petición inválida'}); }
-  if (CLAVE === 'CAMBIA-ESTA-CLAVE') return resp({ok: false, error: 'Cambia la CLAVE en el Apps Script'});
+  if (/^CAMBIA-ESTA/.test(CLAVE)) return resp({ok: false, error: 'Cambia la CLAVE en el Apps Script'});
   if (body.clave !== CLAVE) return resp({ok: false, error: 'Clave incorrecta'});
   if (body.accion === 'leer') return resp({ok: true, data: leer()});
   const S = body.data;

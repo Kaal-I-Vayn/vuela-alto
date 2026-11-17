@@ -168,6 +168,7 @@ details[open]{display:grid;gap:12px}
     <header class="top">
       <div><h1 id="title">Inicio</h1><p class="sub" id="hello"></p></div>
       <div class="top-actions">
+        <button id="syncEstado" class="chip" style="border:0;cursor:pointer" data-act="go" data-id="ajustes" hidden></button>
         <label class="sr" for="mes">Mes</label><input type="month" id="mes">
         <button id="themeBtn" class="btn ghost" aria-label="Cambiar tema claro u oscuro">◐</button>
       </div>
@@ -245,10 +246,76 @@ function load(){
   return blank();
 }
 function save(){
+  S.actualizado = new Date().toISOString();
   try{ localStorage.setItem(KEY, JSON.stringify(S)); }
   catch(e){ toast('No pude guardar en este navegador. Exporta un respaldo en Ajustes.'); }
+  programarSync();
 }
 let S = load();
+
+/* ====== Respaldo en Google Sheets (Apps Script) ====== */
+// La URL y la clave viven aparte de S para que nunca se suban ni se exporten.
+const SYNC = 'vuelaAlto.sync';
+let SY = {url:'', clave:'', auto:true, pendiente:false, ultimo:''};
+try{ SY = {...SY, ...JSON.parse(localStorage.getItem(SYNC) || '{}')}; }catch(e){}
+function saveSY(){ try{ localStorage.setItem(SYNC, JSON.stringify(SY)); }catch(e){} }
+const validUrl = () => /^https:\/\/script\.google\.com\/(a\/[^/]+\/)?macros\/s\/[\w-]+\/exec$/.test(SY.url) && !!SY.clave;
+const syncOn = () => SY.auto && validUrl();
+const hora = d => new Date(d).toLocaleString('es-CL', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
+let syncT, subiendo = false, otraVez = false;
+function estadoSync(txt){
+  const el = document.getElementById('syncEstado'); if(!el) return;
+  el.hidden = !validUrl();
+  el.textContent = txt || (SY.ultimo ? '☁ Respaldado ' + hora(SY.ultimo) : '☁ Sheets conectado');
+  el.classList.toggle('badge-late', /Sin /.test(txt || ''));
+}
+function programarSync(){
+  if(!syncOn()) return;
+  SY.pendiente = true; saveSY(); estadoSync('☁ Cambios por respaldar…');
+  clearTimeout(syncT); syncT = setTimeout(() => subir(), 2500);
+}
+async function llamar(body){
+  let j;
+  try{ j = await (await fetch(SY.url, {method:'POST', body:JSON.stringify({clave:SY.clave, ...body})})).json(); }
+  catch(e){ throw new Error(navigator.onLine ? 'revisa la URL y que el acceso sea "Cualquier usuario"' : 'sin internet'); }
+  if(!j.ok) throw new Error(j.error || 'error desconocido');
+  return j;
+}
+async function subir(manual){
+  if(!validUrl()) return manual && toast('Primero pega la URL de tu Apps Script y tu clave.');
+  if(subiendo){ otraVez = true; return; }
+  clearTimeout(syncT); subiendo = true; estadoSync('☁ Respaldando…');
+  try{
+    await llamar({accion:'guardar', data:S});
+    SY.pendiente = false; SY.ultimo = new Date().toISOString(); saveSY(); estadoSync();
+    if(manual) toast('Respaldo en Google Sheets listo ✓');
+  }catch(e){ estadoSync('☁ Sin respaldar: ' + e.message); if(manual) toast('No pude respaldar: ' + e.message); }
+  finally{ subiendo = false; if(otraVez){ otraVez = false; subir(); } }
+}
+function aplicarDatos(d){
+  if(!d || !Array.isArray(d.movs) || !d.perfil) throw new Error('formato');
+  const b = blank(); S = {...b, ...d, perfil:{...b.perfil, ...d.perfil}};
+  if(S.perfil.tema) document.documentElement.dataset.theme = S.perfil.tema;
+  commit();
+}
+function ofrecerRemoto(data){
+  openForm('Respaldo en Google Sheets', `<p>Tu hoja tiene datos guardados el <strong>${hora(data.actualizado)}</strong>${S.actualizado ? `; este dispositivo tiene los del ${hora(S.actualizado)}` : ''}. ¿Los cargo aquí?</p>
+    <p class="muted">Reemplaza los datos de este dispositivo. Si no los cargas, tu próximo cambio aquí reemplazará el respaldo de la hoja.</p>`,
+    () => { aplicarDatos(data); toast('Datos cargados desde Google Sheets.'); }, 'Cargar respaldo');
+}
+async function revisarRemoto(){
+  if(!syncOn()) return;
+  try{
+    const {data} = await llamar({accion:'leer'});
+    if(SY.pendiente) return subir();
+    if(data && data.actualizado && data.actualizado > (S.actualizado || '')) ofrecerRemoto(data);
+    estadoSync();
+  }catch(e){ estadoSync('☁ Sin conexión con Sheets: ' + e.message); }
+}
+window.addEventListener('online', () => SY.pendiente && subir());
+window.addEventListener('pagehide', () => { // último intento si cierras la app antes de que termine el respaldo
+  if(SY.pendiente && syncOn()) navigator.sendBeacon(SY.url, new Blob([JSON.stringify({clave:SY.clave, accion:'guardar', data:S})], {type:'text/plain'}));
+});
 
 /* ====== Utilidades ====== */
 const $ = s => document.querySelector(s);
@@ -765,6 +832,25 @@ function renderAjustes(){
       <p class="muted" style="margin-bottom:12px">Todo se guarda solo en este navegador. Exporta un respaldo seguido (y antes de borrar el historial).</p>
       <div class="row"><button class="btn primary" data-act="export">Exportar respaldo (JSON)</button><button class="btn" data-act="import">Importar respaldo</button><button class="btn" data-act="csv">Exportar CSV</button></div>
       <div class="row" style="margin-top:12px"><button class="btn" data-act="demo">Cargar demo</button><button class="btn" data-act="del-demo">Borrar demo</button><button class="btn danger" data-act="reset">Borrar todo</button></div></div>
+  </div>
+  <div class="card"><h3>Respaldo en Google Sheets</h3>
+    <p class="muted" style="margin-bottom:12px">Cada cambio se guarda solo en tu hoja de Google unos segundos después. Además te sirve para pasar tus datos al celular u otro computador: conecta la misma hoja y la app te ofrecerá cargarlos.</p>
+    <div class="grid2">
+      <label>URL de la aplicación web (termina en /exec)<input data-sy="url" value="${esc(SY.url)}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" spellcheck="false"></label>
+      <label>Clave secreta (la misma del Apps Script)<input type="password" data-sy="clave" value="${esc(SY.clave)}" autocomplete="off"></label>
+    </div>
+    <label class="check" style="margin-top:12px"><input type="checkbox" data-sy="auto" ${SY.auto ? 'checked' : ''}> Respaldar automáticamente tras cada cambio</label>
+    <div class="row" style="margin-top:12px"><button class="btn primary" data-act="sheets-subir">Respaldar ahora</button><button class="btn" data-act="sheets-bajar">Restaurar desde Sheets</button></div>
+    <details style="margin-top:14px"><summary>Cómo conectarlo (5 minutos, una sola vez)</summary>
+      <ol style="margin:0;padding-left:20px;display:grid;gap:6px">
+        <li>Crea una hoja nueva en <a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a> con tu cuenta de Google y ponle nombre, por ejemplo "Vuela Alto".</li>
+        <li>En la hoja: <strong>Extensiones → Apps Script</strong>. Borra lo que aparece y pega el código de <a href="https://github.com/Kaal-I-Vayn/vuela-alto/blob/main/apps-script/Codigo.gs" target="_blank" rel="noopener">apps-script/Codigo.gs</a>.</li>
+        <li>Cambia <code>CAMBIA-ESTA-CLAVE</code> por una clave tuya (larga, que no uses en otro lado) y guarda (💾).</li>
+        <li><strong>Implementar → Nueva implementación</strong> → tipo <strong>Aplicación web</strong>. Ejecutar como: <strong>Yo</strong>. Quién tiene acceso: <strong>Cualquier usuario</strong>. Autoriza los permisos que pide Google.</li>
+        <li>Copia la URL que termina en <code>/exec</code>, pégala arriba junto con tu clave y toca <strong>Respaldar ahora</strong>.</li>
+      </ol>
+      <p class="muted" style="margin-top:8px">"Cualquier usuario" es necesario para que la app pueda escribir; sin tu clave nadie puede leer ni cambiar la hoja. Si algo sale mal, en la hoja: Archivo → Historial de versiones.</p>
+    </details>
   </div>`;
 }
 const RENDER = {inicio:renderInicio, movs:renderMovs, deudas:renderDeudas, subs:renderSubs, presup:renderPresup, metas:renderMetas, proy:renderProy, graf:renderGraf, herr:renderHerr, ajustes:renderAjustes};
@@ -883,11 +969,17 @@ const ACT = {
   'new-cat': () => openForm('Nueva categoría', `<label>Nombre<input name="n" maxlength="30"></label><div class="grid2"><label>Color<input type="color" name="c" value="#F26B1D"></label><label>Tipo<select name="t"><option value="n">Necesidad</option><option value="d">Deseo</option></select></label></div>`,
     fd => { const n = fd.n.trim(); if(!n) return 'Escribe un nombre.'; if(S.cats.some(c => c.n.toLowerCase() === n.toLowerCase())) return 'Esa categoría ya existe.'; S.cats.push({n, c:fd.c, t:fd.t}); commit(); }),
   'del-cat': i => { const c = S.cats[+i]; if(confirm(`¿Eliminar la categoría "${c.n}"? Los movimientos existentes conservan su nombre.`)){ S.cats.splice(+i, 1); commit(); } },
+  'sheets-subir': () => subir(true),
+  'sheets-bajar': async () => {
+    if(!validUrl()) return toast('Primero pega la URL de tu Apps Script y tu clave.');
+    try{ const {data} = await llamar({accion:'leer'}); data ? ofrecerRemoto(data) : toast('La hoja aún no tiene respaldo. Toca "Respaldar ahora".'); }
+    catch(e){ toast('No pude leer la hoja: ' + e.message); }
+  },
   'export': () => download(`vuela-alto-respaldo-${today()}.json`, JSON.stringify(S, null, 2), 'application/json'),
   'import': () => $('#fileImport').click(),
   'demo': () => { delDemo(); demo(); commit(); toast('Datos de demo cargados. Puedes borrarlos en Ajustes.'); },
   'del-demo': () => { delDemo(); commit(); toast('Datos de demo borrados.'); },
-  'reset': () => { if(confirm('¿Borrar TODOS tus datos? Exporta un respaldo antes. Esto no se puede deshacer.')){ S = blank(); commit(); toast('Todo en blanco. Un nuevo comienzo.'); } }
+  'reset': () => { if(confirm('¿Borrar TODOS tus datos? Exporta un respaldo antes.' + (syncOn() ? ' También se vaciará el respaldo de Google Sheets (lo recuperas en Archivo → Historial de versiones de la hoja).' : ' Esto no se puede deshacer.'))){ S = blank(); commit(); toast('Todo en blanco. Un nuevo comienzo.'); } }
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if(b) ACT[b.dataset.act]?.(b.dataset.id, b); });
 document.addEventListener('input', e => {
@@ -909,6 +1001,13 @@ document.addEventListener('change', e => {
     else p[k] = t.value.trim();
     save(); renderHello(); toast('Guardado.');
   }
+  else if(t.dataset.sy){
+    const k = t.dataset.sy;
+    SY[k] = k === 'auto' ? t.checked : t.value.trim();
+    if(k === 'url' && SY.url && !/^https:\/\/script\.google\.com\/(a\/[^/]+\/)?macros\/s\/[\w-]+\/exec$/.test(SY.url)) toast('Esa URL no es de Apps Script: debe empezar con https://script.google.com/ y terminar en /exec.');
+    saveSY(); estadoSync();
+    if(syncOn() && !SY.ultimo) subir(true);
+  }
   else if(t.dataset.catc !== undefined){ S.cats[+t.dataset.catc].c = t.value; save(); }
   else if(t.dataset.catt !== undefined){ S.cats[+t.dataset.catt].t = t.value; save(); }
 });
@@ -923,7 +1022,7 @@ $('#fileImport').addEventListener('change', e => {
     const d = JSON.parse(txt);
     if(!d || !Array.isArray(d.movs) || !d.perfil) throw new Error('formato');
     if(!confirm('Esto reemplaza tus datos actuales por los del respaldo. ¿Continuar?')) return;
-    const b = blank(); S = {...b, ...d, perfil:{...b.perfil, ...d.perfil}}; commit(); toast('Respaldo importado.');
+    aplicarDatos(d); toast('Respaldo importado.');
   }).catch(() => toast('Ese archivo no es un respaldo válido de Vuela Alto.'));
 });
 $('#fileFoto').addEventListener('change', e => {
@@ -945,6 +1044,8 @@ $('#nav').innerHTML = TABS.map(([k, n]) => `<button data-tab="${k}">${n}</button
 $('#nav').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if(b) go(b.dataset.tab); });
 $('#mes').value = curM;
 go('inicio');
+estadoSync();
+revisarRemoto();
 
 // Autocomprobación de la lógica de dinero y fechas (mira la consola si algo falla)
 console.assert(parseMonto('15.990') === 15990 && parseMonto('abc') === 0, 'parseMonto');
